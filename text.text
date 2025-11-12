@@ -1,0 +1,451 @@
+import { useState, useEffect, useRef } from 'react';
+import { Button } from '@/components/ui/button';
+import { X, Download, Loader2, AlertTriangle, Maximize2, Minimize2 } from 'lucide-react';
+import '../../css/pdf-viewer.css';
+
+interface Styles {
+  // Styles are now handled by Tailwind classes
+}
+
+interface PDFViewerProps {
+  fileUrl: string;
+  fileName?: string;
+  onClose: () => void;
+}
+
+export default function PDFViewer({ fileUrl, fileName, onClose }: PDFViewerProps) {
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const pdfDisplayRef = useRef<HTMLDivElement>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const [pdfUrl, setPdfUrl] = useState('');
+  const [isBlurred, setIsBlurred] = useState(false);
+  const [showPrintScreenAlert, setShowPrintScreenAlert] = useState(false);
+
+  // Handle keyboard shortcuts - Escape to close, disable Ctrl combinations
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Allow Escape to close
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+
+      // Block Ctrl/Cmd key combinations
+      if (e.ctrlKey || e.metaKey) {
+        // Block Ctrl+C (Copy), Ctrl+P (Print), Ctrl+S (Save), Ctrl+A (Select All), Ctrl+U (View Source)
+        if (['c', 'p', 's', 'a', 'u', 'f'].includes(e.key.toLowerCase())) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }
+
+      // Block F12 (DevTools), Ctrl+Shift+I (Inspect), Ctrl+Shift+J (Console)
+      if (e.key === 'F12' || 
+          ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'j', 'c'].includes(e.key.toLowerCase()))) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+
+      // Block PrintScreen and show alert
+      if (e.key === 'PrintScreen' || e.keyCode === 44) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Show alert message
+        setShowPrintScreenAlert(true);
+        setIsBlurred(true);
+        
+        // Hide alert after 3 seconds
+        setTimeout(() => {
+          setShowPrintScreenAlert(false);
+          setIsBlurred(false);
+        }, 3000);
+        
+        return false;
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      // Also block on keyup for PrintScreen
+      if (e.key === 'PrintScreen' || e.keyCode === 44) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Clear clipboard to prevent screenshot capture
+        navigator.clipboard.writeText('').catch(() => {});
+        
+        // Show alert message
+        setShowPrintScreenAlert(true);
+        setIsBlurred(true);
+        
+        // Hide alert after 3 seconds
+        setTimeout(() => {
+          setShowPrintScreenAlert(false);
+          setIsBlurred(false);
+        }, 3000);
+        
+        return false;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleKeyUp, true);
+    };
+  }, [onClose]);
+
+  // Detect when user switches windows or uses screenshot tools
+  useEffect(() => {
+    let blurTimeout: NodeJS.Timeout;
+    let monitorInterval: NodeJS.Timeout;
+
+    const triggerBlur = (duration: number = 2000) => {
+      setIsBlurred(true);
+      clearTimeout(blurTimeout);
+      blurTimeout = setTimeout(() => setIsBlurred(false), duration);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        triggerBlur(3000); // Blur for 3 seconds
+      }
+    };
+
+    const handleBlur = () => {
+      triggerBlur(3000); // Blur for 3 seconds
+    };
+
+    const handleFocus = () => {
+      // Delay unblur by 1 second to catch screenshot tools
+      clearTimeout(blurTimeout);
+      blurTimeout = setTimeout(() => setIsBlurred(false), 1000);
+    };
+
+    const handleMouseLeave = (e: MouseEvent) => {
+      if (e.clientY <= 0 || e.clientX <= 0 || 
+          e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+        triggerBlur(2000);
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      setIsBlurred(true);
+    };
+
+    const handlePageHide = () => {
+      setIsBlurred(true);
+    };
+
+    // Monitor document focus continuously
+    monitorInterval = setInterval(() => {
+      if (!document.hasFocus()) {
+        setIsBlurred(true);
+      }
+    }, 100); // Check every 100ms
+
+    // Add all event listeners
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur, true);
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('mouseleave', handleMouseLeave);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      clearTimeout(blurTimeout);
+      clearInterval(monitorInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur, true);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('mouseleave', handleMouseLeave);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, []);
+
+  // Disable right-click on PDF display area and globally when PDF is open
+  useEffect(() => {
+    const handleContextMenu = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      return false;
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 2) { // Right click
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        return false;
+      }
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      if (e.button === 2) { // Right click
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        return false;
+      }
+    };
+
+    // Add listeners to multiple levels to ensure blocking
+    window.addEventListener('contextmenu', handleContextMenu, true);
+    window.addEventListener('mousedown', handleMouseDown, true);
+    window.addEventListener('mouseup', handleMouseUp, true);
+    
+    document.addEventListener('contextmenu', handleContextMenu, true);
+    document.addEventListener('mousedown', handleMouseDown, true);
+    document.addEventListener('mouseup', handleMouseUp, true);
+
+    const pdfDisplay = pdfDisplayRef.current;
+    if (pdfDisplay) {
+      pdfDisplay.addEventListener('contextmenu', handleContextMenu, true);
+      pdfDisplay.addEventListener('mousedown', handleMouseDown, true);
+      pdfDisplay.addEventListener('mouseup', handleMouseUp, true);
+    }
+
+    return () => {
+      window.removeEventListener('contextmenu', handleContextMenu, true);
+      window.removeEventListener('mousedown', handleMouseDown, true);
+      window.removeEventListener('mouseup', handleMouseUp, true);
+      
+      document.removeEventListener('contextmenu', handleContextMenu, true);
+      document.removeEventListener('mousedown', handleMouseDown, true);
+      document.removeEventListener('mouseup', handleMouseUp, true);
+      
+      if (pdfDisplay) {
+        pdfDisplay.removeEventListener('contextmenu', handleContextMenu, true);
+        pdfDisplay.removeEventListener('mousedown', handleMouseDown, true);
+        pdfDisplay.removeEventListener('mouseup', handleMouseUp, true);
+      }
+    };
+  }, []);
+
+  const handleIframeLoad = () => {
+    setIsLoading(false);
+    setError(null);
+  };
+
+  const handleIframeError = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+    console.error('PDF load error:', e);
+    setIsLoading(false);
+    setError('Failed to load PDF. The file may be corrupted, missing, or you may not have permission to view it.');
+  };
+
+  // Update PDF URL when fileUrl changes
+  useEffect(() => {
+    if (fileUrl) {
+      // Add a timestamp to prevent caching
+      const url = `${fileUrl}${fileUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+      setPdfUrl(url);
+    }
+  }, [fileUrl]);
+
+  // Toggle fullscreen mode
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().catch(err => {
+        console.error('Error attempting to enable fullscreen:', err);
+      });
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen();
+      setIsFullscreen(false);
+    }
+  };
+
+  // Handle fullscreen change events
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  if (!fileUrl) return null;
+
+  // Extract filename from URL or use provided fileName
+  const getFileName = (url: string) => {
+    if (fileName) return fileName;
+    if (!url) return 'Document';
+    const filename = url.split('/').pop() || 'Document';
+    // Remove query parameters if any
+    return filename.split('?')[0];
+  };
+
+  return (
+    <div 
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div 
+        ref={containerRef}
+        className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full max-w-6xl h-[90vh]'} bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200`}
+      >
+        {/* Top Header */}
+        <div className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4">
+          <div className="flex items-center min-w-0">
+            <h2 className="text-lg font-medium text-gray-900 truncate" title={getFileName(fileUrl)}>
+              {getFileName(fileUrl)}
+            </h2>
+          </div>
+          
+          <div className="flex items-center space-x-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggleFullscreen}
+              className="h-9 w-9 p-0 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+              title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="h-4 w-4" />
+              ) : (
+                <Maximize2 className="h-4 w-4" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-9 w-9 p-0 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+              aria-label="Close PDF viewer"
+              title="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+        
+        <div className="flex-1 relative">
+          {isLoading && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-50">
+              <Loader2 className="h-10 w-10 animate-spin text-indigo-600" />
+              <p className="mt-3 text-gray-600">Loading document...</p>
+            </div>
+          )}
+          
+          {error ? (
+            <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+              <div className="bg-red-50 p-4 rounded-full mb-4">
+                <AlertTriangle className="h-10 w-10 text-red-500" />
+              </div>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Failed to load document</h3>
+              <p className="text-gray-600 mb-6 max-w-md">{error}</p>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => window.location.reload()}
+                  className="bg-white hover:bg-gray-50 border-gray-300"
+                >
+                  Try Again
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div 
+              ref={pdfDisplayRef} 
+              className="w-full h-full relative"
+              style={{
+                userSelect: 'none',
+                WebkitUserSelect: 'none',
+                MozUserSelect: 'none',
+                msUserSelect: 'none',
+                WebkitTouchCallout: 'none'
+              }}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <div 
+                className="relative w-full h-full"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  return false;
+                }}
+              >
+                <iframe
+                  src={`${pdfUrl || fileUrl}#toolbar=0&navpanes=0&scrollbar=1&page=1&view=FitH&download=0&print=0`}
+                  className={`w-full h-full border-0 transition-all duration-100 ${
+                    isLoading ? 'opacity-0' : 'opacity-100'
+                  }`}
+                  title="PDF Viewer"
+                  onLoad={handleIframeLoad}
+                  onError={handleIframeError}
+                  frameBorder="0"
+                  style={{
+                    overflow: 'auto',
+                    width: '100%',
+                    height: '100%',
+                    userSelect: 'none',
+                    WebkitUserSelect: 'none',
+                    MozUserSelect: 'none',
+                    msUserSelect: 'none',
+                    filter: isBlurred ? 'blur(50px) brightness(0.3)' : 'none',
+                    transition: 'filter 0.1s ease-out'
+                  }}
+                />
+              </div>
+              
+              {/* Permanent watermark overlay - always visible in screenshots */}
+              <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 9999 }}>
+                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 rotate-[-45deg] opacity-20 select-none">
+                  <p className="text-9xl font-bold text-red-600 whitespace-nowrap">
+                    CONFIDENTIAL
+                  </p>
+                </div>
+                <div className="absolute top-1/4 left-1/4 transform -translate-x-1/2 -translate-y-1/2 rotate-[-45deg] opacity-15 select-none">
+                  <p className="text-7xl font-bold text-red-600 whitespace-nowrap">
+                    DO NOT COPY
+                  </p>
+                </div>
+                <div className="absolute bottom-1/4 right-1/4 transform translate-x-1/2 translate-y-1/2 rotate-[-45deg] opacity-15 select-none">
+                  <p className="text-7xl font-bold text-red-600 whitespace-nowrap">
+                    DO NOT COPY
+                  </p>
+                </div>
+              </div>
+              
+              {/* PrintScreen button alert */}
+              {showPrintScreenAlert && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80 pointer-events-none animate-pulse" style={{ zIndex: 10001 }}>
+                  <div className="bg-red-600 text-white px-12 py-6 rounded-xl shadow-2xl border-4 border-white">
+                    <p className="text-3xl font-bold mb-2">🚫 SCREENSHOT BLOCKED</p>
+                    <p className="text-lg">PrintScreen is disabled for this document</p>
+                    <p className="text-sm mt-2 opacity-90">This action has been logged</p>
+                  </div>
+                </div>
+              )}
+              
+              {/* Screenshot detection warning */}
+              {isBlurred && !showPrintScreenAlert && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/70 pointer-events-none" style={{ zIndex: 10000 }}>
+                  <div className="bg-red-600 text-white px-8 py-4 rounded-lg shadow-2xl">
+                    <p className="text-xl font-bold">⚠️ SCREENSHOT DETECTED</p>
+                    <p className="text-sm mt-1">This action has been logged</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
