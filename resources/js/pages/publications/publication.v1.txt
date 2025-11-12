@@ -1,0 +1,797 @@
+import { useState, useEffect, useMemo } from 'react';
+import { Head, Link, router, usePage } from '@inertiajs/react';
+import AppLayout from '@/layouts/app-layout';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+
+type DayPublications = [number, Publication[]];
+type MonthDays = [number, DayPublications[]];
+type YearMonths = Record<number, MonthDays[]>;
+import PDFViewer from '@/components/pdf-viewer';
+import { Search, Loader2, Plus, FileText, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Card, CardHeader } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from 'sonner';
+
+interface Publication {
+    id: string | number;
+    name: string;
+    title: string;
+    code?: string;
+    description?: string;
+    original_filename: string;
+    file_path: string;
+    file_url: string;
+    mime_type: string;
+    file_size: number;
+    year: number;
+    month?: number;
+    day?: number;
+    page?: number;
+    user_id: number;
+    created_at: string;
+    updated_at: string;
+    type: 'Main publication' | 'Periodical' | 'Magazine' | 'Other' | string;
+    is_disabled: boolean;
+    is_valid: boolean;
+}
+
+function Publications() {
+    const { publications: serverData, filters, canUpload } = usePage().props as unknown as {
+        publications: {
+            data: Publication[];
+            current_page: number;
+            last_page: number;
+            per_page: number;
+            total: number;
+            links: Array<{ url: string | null; label: string; active: boolean }>;
+        };
+        filters: {
+            search?: string;
+        };
+        canUpload: boolean;
+    };
+
+    const [publications, setPublications] = useState<Publication[]>([]);
+    const [filteredPublications, setFilteredPublications] = useState<Publication[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState(filters?.search || '');
+    
+    interface ViewingPdf {
+        url: string;
+        name?: string;
+        year?: string;
+        month?: string;
+        day?: string;
+        page?: string;
+        filename?: string;
+    }
+    const [viewingPdf, setViewingPdf] = useState<ViewingPdf | null>(null);
+    const [expandedYears, setExpandedYears] = useState<Record<number, boolean>>({});
+    const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
+    const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
+    const [pagination, setPagination] = useState({
+        current_page: 1,
+        last_page: 1,
+        per_page: 15,
+        total: 0,
+        links: [] as Array<{ url: string | null; label: string; active: boolean }>
+    });
+
+    useEffect(() => {
+        console.log('Rendering with publications:', publications);
+    }, [publications]);
+
+    // Format date components for search
+    const formatDateComponent = (value?: number) => {
+        if (!value) return '';
+        return value < 10 ? `0${value}` : value.toString();
+    };
+
+    // Handle search input change with real-time updates
+    const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        setSearchTerm(value);
+        
+        // Update URL with search query for better UX (back/forward navigation)
+        const params = new URLSearchParams(window.location.search);
+        if (value) {
+            params.set('search', value);
+        } else {
+            params.delete('search');
+        }
+        const newUrl = `${window.location.pathname}?${params.toString()}`;
+        window.history.pushState({}, '', newUrl);
+    };
+    
+    // Effect to handle search when searchTerm or publications change
+    useEffect(() => {
+        if (!searchTerm.trim()) {
+            setFilteredPublications(publications);
+            return;
+        }
+        
+        const searchTerms = searchTerm.toLowerCase().split(/\s+/).filter(term => term.length > 0);
+        
+        const filtered = publications.filter((pub: Publication) => {
+            const title = pub.title?.toLowerCase() || '';
+            const filename = pub.original_filename?.toLowerCase() || '';
+            
+            // Check for exact title match first
+            if (searchTerms.length === 1 && title === searchTerm.toLowerCase().trim()) {
+                return true;
+            }
+            
+            // Check if all search terms are in the title
+            const allInTitle = searchTerms.every((term: string) => title.includes(term));
+            if (allInTitle) return true;
+            
+            // Check if any search term is in the title
+            const anyInTitle = searchTerms.some((term: string) => title.includes(term));
+            
+            // Check other fields if no matches in title
+            if (!anyInTitle) {
+                const searchableText = [
+                    filename,
+                    pub.code?.toLowerCase() || '',
+                    pub.description?.toLowerCase() || '',
+                    pub.type?.toLowerCase() || '',
+                    pub.year?.toString() || '',
+                    pub.month ? new Date(2000, pub.month - 1, 1).toLocaleString('default', { month: 'long' }).toLowerCase() : ''
+                ].join(' ');
+                
+                return searchTerms.every((term: string) => searchableText.includes(term));
+            }
+            
+            return true;
+        });
+        
+        setFilteredPublications(filtered);
+    }, [searchTerm, publications]);
+
+    // Initialize data and handle URL search parameter on component mount
+    useEffect(() => {
+        if (serverData) {
+            setPublications(serverData.data);
+            setFilteredPublications(serverData.data);
+            setPagination({
+                current_page: serverData.current_page,
+                last_page: serverData.last_page,
+                per_page: serverData.per_page,
+                total: serverData.total,
+                links: serverData.links
+            });
+            
+            // Set all years as expanded by default
+            const years = new Set<number>();
+            serverData.data.forEach((pub: Publication) => {
+                if (pub.year) years.add(pub.year);
+            });
+            
+            const expanded: Record<number, boolean> = {};
+            years.forEach(year => expanded[year] = true);
+            setExpandedYears(expanded);
+            
+            setIsLoading(false);
+        }
+        
+        // Initialize search term from URL if present
+        const params = new URLSearchParams(window.location.search);
+        const searchParam = params.get('search');
+        if (searchParam) {
+            setSearchTerm(searchParam);
+        }
+    }, [serverData]);
+            
+    // Group publications by year, month, and day for display
+    const { sortedGrouped, sortedYears } = useMemo(() => {
+        const dataToGroup = searchTerm ? filteredPublications : publications;
+        if (!dataToGroup || dataToGroup.length === 0) { 
+            return { 
+                sortedGrouped: {} as Record<number, Array<[number, Array<[number, Publication[]]>]>>, 
+                sortedYears: [] as number[] 
+            }; 
+        }
+        
+        // First group by year, then by month, then by day
+        const grouped = dataToGroup.reduce<Record<number, Record<number, Record<number, Publication[]>>>>((acc, pub) => {
+            const year = pub.year || 0;
+            const month = pub.month || 0;
+            const day = pub.day || 0;
+            
+            if (!acc[year]) {
+                acc[year] = {};
+            }
+            
+            if (!acc[year][month]) {
+                acc[year][month] = {};
+            }
+            
+            if (!acc[year][month][day]) {
+                acc[year][month][day] = [];
+            }
+            
+            acc[year][month][day].push(pub);
+            return acc;
+        }, {});
+        
+        // Sort the groups and convert to arrays
+        const sortedGrouped: Record<number, Array<[number, Array<[number, Publication[]]>]>> = {};
+        const years = Object.keys(grouped).map(Number).sort((a, b) => b - a);
+        
+        years.forEach(year => {
+            const months = Object.entries(grouped[year])
+                .map(([month, days]) => {
+                    const monthNum = parseInt(month, 10);
+                    const daysArray = Object.entries(days).map(([day, pubs]) => {
+                        return [parseInt(day, 10), pubs] as [number, Publication[]];
+                    }).sort(([dayA], [dayB]) => dayB - dayA);
+                    
+                    return [monthNum, daysArray] as [number, Array<[number, Publication[]]>];
+                })
+                .sort(([monthA], [monthB]) => monthB - monthA);
+                
+            sortedGrouped[year] = months;
+        });
+        
+        return { sortedGrouped, sortedYears: years };
+    }, [filteredPublications, publications, searchTerm]);
+
+    // Toggle year expansion
+    const toggleYear = (year: number) => {
+        setExpandedYears(prev => ({
+            ...prev,
+            [year]: !prev[year]
+        }));
+    };
+
+    // Initialize expanded years with all years expanded by default
+    useEffect(() => {
+        if (sortedYears && sortedYears.length > 0) {
+            const initialExpanded = sortedYears.reduce((acc: Record<number, boolean>, year: number) => {
+                acc[year] = true;
+                return acc;
+            }, {} as Record<number, boolean>);
+            
+            setExpandedYears(prev => ({
+                ...initialExpanded,
+                ...prev
+            }));
+        }
+    }, [sortedYears]);
+    
+    // Toggle month expansion
+    const toggleMonth = (year: number, month: number) => {
+        const key = `${year}-${month}`;
+        setExpandedMonths(prev => ({
+            ...prev,
+            [key]: !prev[key]
+        }));
+    };
+    
+    // Toggle date expansion
+    const toggleDate = (year: number, month: number, day: number) => {
+        const key = `${year}-${month}-${day}`;
+        setExpandedDates(prev => ({
+            ...prev,
+            [key]: !prev[key]
+        }));
+    };
+
+    // Get relative date string (e.g., '2 months ago')
+    const getRelativeDate = (year: number, month: number): string => {
+        if (!month) return '';
+        
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        const currentMonth = now.getMonth() + 1; // getMonth() is 0-indexed
+        
+        if (year === currentYear && month === currentMonth) {
+            return 'This month';
+        }
+        
+        const monthDiff = (currentYear - year) * 12 + (currentMonth - month);
+        
+        if (monthDiff < 1) return 'This month';
+        if (monthDiff === 1) return 'Last month';
+        if (monthDiff < 12) return `${monthDiff} months ago`;
+        
+        const years = Math.floor(monthDiff / 12);
+        return years === 1 ? '1 year ago' : `${years} years ago`;
+    };
+
+    // Initialize data
+    useEffect(() => {
+        console.log('Server data received:', serverData);
+        
+        // Handle different possible server response formats
+        let publicationsData: Publication[] = [];
+        
+        if (Array.isArray(serverData)) {
+            // Case 1: Server returns an array directly
+            publicationsData = serverData;
+        } else if (serverData && typeof serverData === 'object' && 'data' in serverData) {
+            // Case 2: Server returns an object with a data property
+            const data = serverData as { data: any };
+            if (Array.isArray(data.data)) {
+                publicationsData = data.data;
+            }
+        }
+        
+        console.log('Processed publications data:', publicationsData);
+        
+        if (publicationsData && publicationsData.length > 0) {
+            console.log(`Found ${publicationsData.length} publications`);
+            setPublications(publicationsData);
+            setFilteredPublications(publicationsData);
+            setPagination({
+                current_page: 1,
+                last_page: 1,
+                per_page: publicationsData.length,
+                total: publicationsData.length,
+                links: []
+            });
+        } else {
+            console.log('No valid publications data found');
+            setPublications([]);
+        }
+        setIsLoading(false);
+    }, [serverData]);
+
+    // Format file size to human readable format
+    const formatFileSize = (bytes: number): string => {
+        if (!bytes) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    // Format date to readable format
+    const formatDate = (dateString: string): string => {
+        if (!dateString) return 'N/A';
+        try {
+            return new Date(dateString).toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        } catch (e) {
+            return 'Invalid date';
+        }
+    };
+
+    // Handle search
+    const handleSearch = (search: string) => {
+        router.get(route('publications.index'), { search }, {
+            preserveState: true,
+            preserveScroll: true
+        });
+    };
+
+    // Initialize data
+    useEffect(() => {
+        if (serverData) {
+            setPublications(serverData.data);
+            setFilteredPublications(serverData.data);
+            setPagination({
+                current_page: serverData.current_page,
+                last_page: serverData.last_page,
+                per_page: serverData.per_page,
+                total: serverData.total,
+                links: serverData.links
+            });
+            setIsLoading(false);
+        }
+    }, [serverData]);
+    
+    // Load search term from URL on initial load
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const searchParam = params.get('search');
+        if (searchParam) {
+            setSearchTerm(searchParam);
+            // Trigger search with the loaded term
+            const searchEvent = { target: { value: searchParam } } as React.ChangeEvent<HTMLInputElement>;
+            handleSearchChange(searchEvent);
+        }
+    }, []);
+
+
+    // Handle delete
+    const handleDelete = (id: string | number) => {
+        if (confirm('Are you sure you want to delete this publication?')) {
+            router.delete(route('publications.destroy', id), {
+                preserveScroll: true,
+                onSuccess: () => {
+                    toast.success('Publication deleted successfully');
+                    const updatedPublications = publications.filter(pub => pub.id !== id);
+                    setPublications(updatedPublications);
+                    // Update filtered publications with the updated list
+                    setFilteredPublications(updatedPublications);
+                },
+                onError: () => {
+                    toast.error('Failed to delete publication');
+                },
+            });
+        }
+    };
+
+    // Handle view
+    const handleView = (id: string | number) => {
+        router.get(route('publications.show', id));
+    };
+
+    // Log the current state for debugging
+    console.log('Rendering with publications:', publications);
+    
+    // Initialize expandedYears with all years expanded by default
+    useEffect(() => {
+        if (sortedYears && sortedYears.length > 0) {
+            const initialExpanded = sortedYears.reduce((acc: Record<number, boolean>, year: number) => {
+                acc[year] = true;
+                return acc;
+            }, {} as Record<number, boolean>);
+            
+            setExpandedYears(prev => ({
+                ...initialExpanded,
+                ...prev
+            }));
+        }
+    }, [sortedYears]);
+
+    // Load search term from URL on initial load
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const searchParam = params.get('search');
+        if (searchParam) {
+            setSearchTerm(searchParam);
+        }
+    }, []);
+
+    return (
+        <AppLayout
+            breadcrumbs={[
+                { title: 'Dashboard', href: '/dashboard' },
+                { title: 'Publications', href: '/publications' },
+            ]}
+        >
+            <Head title="Publications" />
+            
+            <div className="container mx-auto py-6 px-4">
+                <div className="flex flex-col space-y-6">
+                    <div className="flex flex-col space-y-4 sm:flex-row sm:items-center sm:justify-between">
+                        <h1 className="text-2xl font-bold tracking-tight">Publications</h1>
+                        <Button asChild>
+                            <Link href={route('publications.create')}>
+                                <Plus className="mr-2 h-4 w-4" />
+                                Add Publication
+                            </Link>
+                        </Button>
+                    </div>
+
+                    <div className="flex flex-col space-y-2">
+                        <p className="text-sm text-muted-foreground">
+                            Search by name, type, or use the format: <span className="font-mono bg-muted px-2 py-1 rounded">name-year-month-date-page</span> (e.g., din-1965-08-03-0001)
+                        </p>
+                        <div className="flex items-center gap-2">
+                            <div className="relative flex-1">
+                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    type="search"
+                                    placeholder="Search publications..."
+                                    className="w-full rounded-lg bg-background pl-8"
+                                    value={searchTerm}
+                                    onChange={handleSearchChange}
+                                    disabled={isLoading}
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {isLoading ? (
+                        <div className="space-y-4">
+                            {[...Array(5)].map((_, i) => (
+                                <Card key={i}>
+                                    <CardHeader className="p-4">
+                                        <div className="flex items-center gap-2">
+                                            <Skeleton className="h-5 w-5 rounded-md" />
+                                            <Skeleton className="h-6 w-48" />
+                                            <Skeleton className="h-5 w-10 ml-2" />
+                                        </div>
+                                    </CardHeader>
+                                </Card>
+                            ))}
+                        </div>
+                    ) : !filteredPublications || filteredPublications.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                            <FileText className="h-12 w-12 mb-4 opacity-30" />
+                            <p className="text-lg font-medium">
+                                {searchTerm ? 'No matching publications found' : 'No publications found'}
+                            </p>
+                            <p className="text-sm">
+                                {searchTerm ? 'Try a different search term' : 'Upload your first publication to get started'}
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {sortedYears.map((year: number) => (
+                                <div key={year} className="mb-4 border border-gray-200 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow duration-200">
+                                    <button
+                                        onClick={() => toggleYear(year)}
+                                        className="w-full text-left p-4 bg-gradient-to-r from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 flex items-center justify-between transition-colors duration-200"
+                                    >
+                                        <div className="flex items-center">
+                                            <div className="w-2 h-8 bg-blue-500 rounded-full mr-3"></div>
+                                            <h3 className="text-lg font-semibold text-gray-800">{year}</h3>
+                                            <span className="ml-3 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                                {sortedGrouped[year]?.reduce((acc, [_, pubs]) => acc + pubs.length, 0)} items
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center">
+                                            <span className="text-sm text-gray-500 mr-2">
+                                                {expandedYears[year] ? 'Collapse' : 'Expand'}
+                                            </span>
+                                            <ChevronDown 
+                                                className={`h-5 w-5 text-gray-500 transition-transform duration-200 ${
+                                                    expandedYears[year] ? 'transform rotate-180' : ''
+                                                }`}
+                                            />
+                                        </div>
+                                    </button>
+                                    
+                                    <div className={`transition-all duration-300 ease-in-out overflow-hidden ${
+                                        expandedYears[year] ? 'max-h-[9999px]' : 'max-h-0'
+                                    }`}>
+                                        <div className="divide-y divide-gray-100">
+                                            {sortedGrouped[year]?.map(([month, monthPubs]) => {
+                                                const monthKey = `${year}-${month}`;
+                                                const monthName = month ? 
+                                                    new Date(year, month - 1, 1).toLocaleString('default', { month: 'long' }) : 
+                                                    'Unknown Month';
+                                                    
+                                                const monthDate = month ? new Date(year, month - 1, 1) : null;
+                                                const monthColor = monthDate ? 
+                                                    `hsl(${(month * 30) % 360}, 70%, 90%)` : '#f3f4f6';
+                                                    
+                                                return (
+                                                    <div key={monthKey} className="bg-white">
+                                                        <button
+                                                            onClick={() => toggleMonth(year, month)}
+                                                            className="w-full text-left p-3 pl-12 hover:bg-gray-50 flex items-center justify-between transition-colors duration-150"
+                                                            style={{ backgroundColor: expandedMonths[monthKey] ? 'rgba(243, 244, 246, 0.5)' : 'white' }}
+                                                        >
+                                                            <div className="flex items-center">
+                                                                <div 
+                                                                    className="w-2 h-6 rounded-full mr-3"
+                                                                    style={{ backgroundColor: monthColor }}
+                                                                ></div>
+                                                                <span className="font-medium text-gray-800">
+                                                                    {monthName} 
+                                                                    <span className="ml-2 text-sm font-normal text-gray-500">
+                                                                        ({monthPubs.length} {monthPubs.length === 1 ? 'item' : 'items'})
+                                                                    </span>
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center">
+                                                                <ChevronDown 
+                                                                    className={`h-4 w-4 text-gray-400 transition-transform duration-200 ${
+                                                                        expandedMonths[monthKey] ? 'transform rotate-180' : ''
+                                                                    }`}
+                                                                />
+                                                            </div>
+                                                        </button>
+                                                        
+                                                        <div className={`transition-all duration-300 ease-in-out overflow-hidden ${
+                                                            expandedMonths[monthKey] ? 'max-h-[9999px]' : 'max-h-0'
+                                                        }`}>
+                                                            <div className="divide-y divide-gray-100">
+                                                                {monthPubs.map(([day, dayPubs]) => {
+                                                                    const dateKey = `${year}-${month}-${day}`;
+                                                                    const dateLabel = day ? 
+                                                                        new Date(year, month - 1, day).toLocaleDateString('en-US', { 
+                                                                            weekday: 'long', 
+                                                                            year: 'numeric', 
+                                                                            month: 'long', 
+                                                                            day: 'numeric' 
+                                                                        }) : 'Unknown Date';
+                                                                        
+                                                                    return (
+                                                                        <div key={dateKey} className="bg-gray-50">
+                                                                            <button
+                                                                                onClick={() => toggleDate(year, month, day)}
+                                                                                className="w-full text-left p-3 pl-16 hover:bg-gray-100 flex items-center justify-between transition-colors duration-150"
+                                                                                style={{ backgroundColor: expandedDates[dateKey] ? 'rgba(243, 244, 246, 0.7)' : 'rgba(249, 250, 251, 0.7)' }}
+                                                                            >
+                                                                                <div className="flex items-center">
+                                                                                    <div 
+                                                                                        className="w-2 h-5 rounded-full mr-3"
+                                                                                        style={{ backgroundColor: `hsl(${(day * 10) % 360}, 70%, 80%)` }}
+                                                                                    ></div>
+                                                                                    <span className="font-medium text-gray-800">
+                                                                                        {dateLabel}
+                                                                                        <span className="ml-2 text-sm font-normal text-gray-500">
+                                                                                            ({dayPubs.length} {dayPubs.length === 1 ? 'item' : 'items'})
+                                                                                        </span>
+                                                                                    </span>
+                                                                                </div>
+                                                                                <div className="flex items-center">
+                                                                                    <ChevronDown 
+                                                                                        className={`h-4 w-4 text-gray-400 transition-transform duration-200 ${
+                                                                                            expandedDates[dateKey] ? 'transform rotate-180' : ''
+                                                                                        }`}
+                                                                                    />
+                                                                                </div>
+                                                                            </button>
+                                                                            
+                                                                            <div className={`transition-all duration-300 ease-in-out overflow-hidden ${
+                                                                                expandedDates[dateKey] ? 'max-h-[9999px]' : 'max-h-0'
+                                                                            }`}>
+                                                                                <div className="overflow-x-auto">
+                                                                                    <table className="min-w-full divide-y divide-gray-200">
+                                                                                        <thead className="bg-gray-50">
+                                                                                            <tr className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                                                <th className="px-4 py-3 text-left">Title</th>
+                                                                                                <th className="px-4 py-3 text-left hidden md:table-cell">Type</th>
+                                                                                                <th className="px-4 py-3 text-left hidden lg:table-cell">Date</th>
+                                                                                                <th className="px-4 py-3 text-left hidden xl:table-cell">File</th>
+                                                                                                <th className="px-4 py-3 text-left hidden 2xl:table-cell">Size</th>
+                                                                                                <th className="px-4 py-3 text-right">Actions</th>
+                                                                                            </tr>
+                                                                                        </thead>
+                                                                                        <tbody className="bg-white divide-y divide-gray-200">
+                                                                                            {dayPubs.map((pub) => (
+                                                                            <tr key={pub.id} className="hover:bg-gray-50 group">
+                                                                                <td className="px-4 py-4 whitespace-nowrap">
+                                                                                    <div className="flex items-center">
+                                                                                        <div className="flex-shrink-0 h-10 w-10 flex items-center justify-center bg-blue-50 rounded-md group-hover:bg-blue-100 transition-colors">
+                                                                                            <FileText className="h-5 w-5 text-blue-600" />
+                                                                                        </div>
+                                                                                        <div className="ml-4">
+                                                                                            <div className="text-sm font-medium text-gray-900 group-hover:text-blue-600 transition-colors">
+                                                                                                {pub.title || pub.original_filename || 'Untitled'}
+                                                                                            </div>
+                                                                                            {pub.description && (
+                                                                                                <div className="text-sm text-gray-500 line-clamp-1">
+                                                                                                    {pub.description}
+                                                                                                </div>
+                                                                                            )}
+                                                                                            <div className="md:hidden mt-1 flex flex-wrap gap-1">
+                                                                                                {pub.type && (
+                                                                                                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">
+                                                                                                        {pub.type}
+                                                                                                    </span>
+                                                                                                )}
+                                                                                                <span className="text-xs text-gray-500">
+                                                                                                    {pub.year}
+                                                                                                    {pub.month && `-${String(pub.month).padStart(2, '0')}`}
+                                                                                                    {pub.day && `-${String(pub.day).padStart(2, '0')}`}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td className="px-4 py-4 whitespace-nowrap hidden md:table-cell">
+                                                                                    {pub.type && (
+                                                                                        <span className="px-2.5 py-0.5 inline-flex text-xs leading-5 font-medium rounded-full bg-green-50 text-green-700">
+                                                                                            {pub.type}
+                                                                                        </span>
+                                                                                    )}
+                                                                                </td>
+                                                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 hidden lg:table-cell">
+                                                                                    <div className="flex flex-col">
+                                                                                        <span>
+                                                                                            {pub.year}
+                                                                                            {pub.month && `-${String(pub.month).padStart(2, '0')}`}
+                                                                                            {pub.day && `-${String(pub.day).padStart(2, '0')}`}
+                                                                                        </span>
+                                                                                        <span className="text-xs text-gray-400">
+                                                                                            {formatDate(pub.created_at)}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 hidden xl:table-cell">
+                                                                                    {pub.original_filename ? (
+                                                                                        <div className="truncate max-w-xs">
+                                                                                            {pub.original_filename}
+                                                                                        </div>
+                                                                                    ) : (
+                                                                                        <span className="text-gray-400 text-sm">No file</span>
+                                                                                    )}
+                                                                                    <div className="text-xs text-gray-400">
+                                                                                        {pub.mime_type}
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 hidden 2xl:table-cell">
+                                                                                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                                                                        {formatFileSize(pub.file_size)}
+                                                                                    </span>
+                                                                                </td>
+                                                                                <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                                                    <div className="flex items-center justify-end gap-2">
+                                                                                        <Button 
+                                                                                            variant="ghost" 
+                                                                                            size="sm"
+                                                                            
+                                                                                            className="h-8 w-8 p-0 hover:bg-blue-50 hover:text-blue-600"
+                                                                            
+                                                                                            title="View PDF in browser"
+                                                                                            onClick={(e) => {
+                                                                                                e.preventDefault();
+                                                                
+                                                                                            // Extract the filename and parse its components
+                                                                                            const filename = pub.original_filename.split('/').pop() || '';
+                                                                                            
+                                                                                            // Parse the filename format: NAME-YYYY-MM-DD-PPPP.PDF
+                                                                                            const [name, year, month, dayWithPage] = filename.split('-');
+                                                                                            const day = dayWithPage ? dayWithPage.substring(0, 2) : '';
+                                                                                            const page = dayWithPage ? dayWithPage.substring(2).split('.')[0] : '';
+                                                                                            
+                                                                                            // Convert name to lowercase to match the directory name
+                                                                                            const lowerName = name.toLowerCase();
+                                                                                            
+                                                                                            // Use our custom Laravel endpoint to serve the PDF
+                                                                                            // This will handle the file access and proper headers
+                                                                                            // The URL should match our Laravel route: /storage/publications/{name}/{year}/{month}/{day}/{filename}
+                                                                                            const publicUrl = `/storage/publications/${lowerName}/${year}/${month}/${day}/${filename}`;
+                                                                                            
+                                                                                            console.log('PDF path:', publicUrl);
+                                                                                            setViewingPdf({ 
+                                                                                                url: publicUrl,
+                                                                                                name,
+                                                                                                year,
+                                                                                                month,
+                                                                                                day,
+                                                                                                page,
+                                                                                                filename
+                                                                                            });
+                                                                                            }}
+                                                                                        >
+                                                                                            <FileText className="h-4 w-4" />
+                                                                                        </Button>
+                                                                                        <Button 
+                                                                                            variant="ghost" 
+                                                                                            size="sm"
+                                                                                            className="h-8 w-8 p-0 text-gray-400 hover:text-red-600 hover:bg-red-50"
+                                                                                            onClick={() => handleDelete(pub.id)}
+                                                                                            title="Delete file"
+                                                                                        >
+                                                                                            <Trash2 className="h-4 w-4" />
+                                                                                        </Button>
+                                                                                    </div>
+                                                                                </td>
+                                                                            </tr>
+                                                                                            ))}
+                                                                                        </tbody>
+                                                                                    </table>
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+          {viewingPdf && (
+        <PDFViewer 
+          fileUrl={viewingPdf.url} 
+          onClose={() => setViewingPdf(null)} 
+        />
+      )}
+    </AppLayout>
+    );
+}
+
+export default Publications;

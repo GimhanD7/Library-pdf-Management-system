@@ -1,0 +1,78 @@
+/* Hide PDF.js download, print, and save buttons */
+#download,
+#print,
+#openFile,
+#save,
+#saveAs,
+#secondaryDownload,
+#secondaryPrint,
+#secondaryOpenFile,
+#secondarySave,
+button[title="Download"],
+button[title="Print"],
+button[title="Save"],
+button[title="Save As"],
+button[data-l10n-id="download"],
+button[data-l10n-id="print"],
+button[data-l10n-id="save"],
+button[data-l10n-id="save_as"],
+.download,
+.print,
+.save {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Hide toolbar completely */
+#toolbarContainer,
+.toolbar {
+  display: none !important;
+}
+
+/* Prevent text selection in PDF */
+.textLayer {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+}
+
+/* Prevent context menu globally */
+* {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  -khtml-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+}
+
+/* Force hide any context menu that might appear */
+.context-menu,
+[role="menu"],
+[role="menuitem"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Additional right-click prevention for iframe content */
+iframe {
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+  pointer-events: auto !important;
+}
+
+/* Prevent drag and drop */
+img, iframe, embed, object {
+  -webkit-user-drag: none !important;
+  -khtml-user-drag: none !important;
+  -moz-user-drag: none !important;
+  -o-user-drag: none !important;
+  user-drag: none !important;
+}
